@@ -1,4 +1,3 @@
-
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -89,40 +88,60 @@ export function useCreateExpense() {
       description: string; 
       amount: number; 
       category?: string; 
-      splitAmong: string[]; 
+      splitAmong: Array<{ userId: string; amount: number }>; 
     }) => {
       if (!user) throw new Error('User not authenticated');
 
-      // Create the expense
-      const { data: expense, error: expenseError } = await supabase
-        .from('expenses')
-        .insert({
-          group_id: groupId,
-          paid_by: user.id,
-          description,
-          amount,
-          category,
-        })
-        .select()
-        .single();
+      try {
+        // Create the expense
+        const { data: expense, error: expenseError } = await supabase
+          .from('expenses')
+          .insert({
+            group_id: groupId,
+            paid_by: user.id,
+            description,
+            amount,
+            category,
+          })
+          .select()
+          .single();
 
-      if (expenseError) throw expenseError;
+        if (expenseError) throw expenseError;
 
-      // Create expense splits
-      const splitAmount = amount / splitAmong.length;
-      const splits = splitAmong.map(userId => ({
-        expense_id: expense.id,
-        user_id: userId,
-        amount: splitAmount,
-      }));
+        // Create expense splits using the provided split amounts
+        const splits = splitAmong.map(split => ({
+          expense_id: expense.id,
+          user_id: split.userId,
+          amount: split.amount,
+          settled: false
+        }));
 
-      const { error: splitsError } = await supabase
-        .from('expense_splits')
-        .insert(splits);
+        // Also add a split for the payer
+        const payerSplit = splitAmong.find(split => split.userId === user.id);
+        if (!payerSplit) {
+          splits.push({
+            expense_id: expense.id,
+            user_id: user.id,
+            amount: 0, // The payer's share is handled through others' splits
+            settled: true // Payer's split is always settled
+          });
+        }
 
-      if (splitsError) throw splitsError;
+        const { error: splitsError } = await supabase
+          .from('expense_splits')
+          .insert(splits);
 
-      return expense;
+        if (splitsError) {
+          // If splits creation fails, delete the expense
+          await supabase.from('expenses').delete().eq('id', expense.id);
+          throw splitsError;
+        }
+
+        return expense;
+      } catch (error: any) {
+        console.error('Error in expense creation:', error);
+        throw new Error(error.message || 'Failed to create expense');
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });

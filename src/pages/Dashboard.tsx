@@ -1,9 +1,8 @@
-
 import React from "react";
 import { BalanceSummary } from "@/components/dashboard/BalanceSummary";
 import { GroupsList } from "@/components/dashboard/GroupsList";
 import { RecentExpenses } from "@/components/dashboard/RecentExpenses";
-import { FriendBalances } from "@/components/dashboard/FriendBalances";
+import { MonthlySummary } from "@/components/dashboard/MonthlySummary";
 
 const Dashboard = () => {
   return (
@@ -13,7 +12,7 @@ const Dashboard = () => {
       <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <div className="col-span-1 md:col-span-2 space-y-6">
           <BalanceSummary />
-          <FriendBalances />
+          <MonthlySummary />
         </div>
         
         <div className="col-span-1 md:col-span-3 space-y-6">

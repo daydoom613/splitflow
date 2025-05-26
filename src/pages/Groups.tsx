@@ -6,14 +6,17 @@ import { Search, Users, Plus } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { CreateGroupModal } from "@/components/CreateGroupModal";
+import { DeleteGroupDropdown } from "@/components/DeleteGroupDropdown";
 import { useToast } from "@/hooks/use-toast";
 import { useGroups } from "@/hooks/useGroups";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 
 const Groups = () => {
   const { toast } = useToast();
   const { data: groups = [], isLoading } = useGroups();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.value) {
@@ -38,7 +41,10 @@ const Groups = () => {
               Manage your shared expenses in groups
             </p>
           </div>
-          <CreateGroupModal />
+          <div className="flex items-center gap-2">
+            <DeleteGroupDropdown />
+            <CreateGroupModal />
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
@@ -92,7 +98,10 @@ const Groups = () => {
             Manage your shared expenses in groups
           </p>
         </div>
-        <CreateGroupModal />
+        <div className="flex items-center gap-2">
+          <DeleteGroupDropdown />
+          <CreateGroupModal />
+        </div>
       </div>
 
       <div className="flex items-center gap-4">
@@ -111,6 +120,7 @@ const Groups = () => {
         {groups.map((group) => {
           const members = group.group_members || [];
           const totalExpenses = group.expenses?.reduce((sum, expense) => sum + expense.amount, 0) || 0;
+          const isAdmin = group.created_by === user?.id;
 
           return (
             <div 
@@ -118,7 +128,9 @@ const Groups = () => {
               className="block cursor-pointer" 
               onClick={() => handleGroupClick(group.id)}
             >
-              <Card className="overflow-hidden hover:shadow-md transition-shadow duration-200">
+              <Card className={`overflow-hidden hover:shadow-md transition-shadow duration-200 ${
+                isAdmin ? "bg-green-50" : "bg-blue-50"
+              }`}>
                 <div className={`h-3 w-full ${
                   group.category === "home" ? "bg-splitflow-primary" : 
                   group.category === "travel" ? "bg-splitflow-accent" : 
@@ -137,8 +149,12 @@ const Groups = () => {
                         <p className="text-sm text-muted-foreground mt-1">{group.description}</p>
                       )}
                     </div>
-                    <div className="bg-muted rounded-full p-2">
-                      <Users className="h-5 w-5 text-muted-foreground" />
+                    <div className={`rounded-full p-2 ${
+                      isAdmin ? "bg-green-100" : "bg-blue-100"
+                    }`}>
+                      <Users className={`h-5 w-5 ${
+                        isAdmin ? "text-green-600" : "text-blue-600"
+                      }`} />
                     </div>
                   </div>
 
@@ -162,7 +178,7 @@ const Groups = () => {
                     <div className="text-right">
                       <p className="text-sm font-medium">₹{totalExpenses.toLocaleString()}</p>
                       <p className="text-xs text-muted-foreground">
-                        Total expenses
+                        {isAdmin ? "Total expenses (Admin)" : "Total expenses (Member)"}
                       </p>
                     </div>
                   </div>

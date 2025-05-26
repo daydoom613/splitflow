@@ -11,10 +11,21 @@ import { useGroups } from "@/hooks/useGroups";
 import { useCreateExpense } from "@/hooks/useExpenses";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { useAuth } from "@/contexts/AuthContext";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 interface AddExpenseModalProps {
   children?: React.ReactNode;
   groupId?: string;
+}
+
+type SplitType = 'equal' | 'ratio';
+
+interface MemberSplit {
+  userId: string;
+  name: string;
+  value: number; // ratio value
+  amount: number; // calculated amount
 }
 
 const EXPENSE_CATEGORIES = [
@@ -37,9 +48,13 @@ export function AddExpenseModal({ children, groupId }: AddExpenseModalProps) {
   const [selectedGroup, setSelectedGroup] = useState(groupId || "");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [category, setCategory] = useState("");
+  const [splitType, setSplitType] = useState<SplitType>("equal");
+  const [memberSplits, setMemberSplits] = useState<MemberSplit[]>([]);
+  
   const { toast } = useToast();
   const { data: groups = [] } = useGroups();
   const createExpenseMutation = useCreateExpense();
+  const { user } = useAuth();
 
   // Reset form when modal opens/closes
   React.useEffect(() => {
@@ -49,8 +64,68 @@ export function AddExpenseModal({ children, groupId }: AddExpenseModalProps) {
       if (!groupId) setSelectedGroup("");
       setSelectedMembers([]);
       setCategory("");
+      setSplitType("equal");
+      setMemberSplits([]);
     }
   }, [open, groupId]);
+
+  // Update member splits when members are selected or split type changes
+  React.useEffect(() => {
+    const selectedGroupData = groups.find(g => g.id === (selectedGroup || groupId));
+    const members = selectedGroupData?.group_members || [];
+    const selectedMemberDetails = members.filter(m => selectedMembers.includes(m.user_id));
+    
+    if (selectedMemberDetails.length === 0) {
+      setMemberSplits([]);
+      return;
+    }
+
+    const parsedAmount = parseFloat(amount) || 0;
+
+    switch (splitType) {
+      case 'equal':
+        const equalShare = parsedAmount / selectedMemberDetails.length;
+        setMemberSplits(selectedMemberDetails.map(member => ({
+          userId: member.user_id,
+          name: member.profiles.full_name,
+          value: 1, // Everyone has equal ratio
+          amount: equalShare
+        })));
+        break;
+
+      case 'ratio':
+        // Maintain existing ratios if possible, otherwise use 1:1:1...
+        const existingRatios = new Map(memberSplits.map(m => [m.userId, m.value]));
+        const members = selectedMemberDetails.map(member => ({
+          userId: member.user_id,
+          name: member.profiles.full_name,
+          value: existingRatios.get(member.user_id) || 1
+        }));
+        const totalRatio = members.reduce((sum, m) => sum + m.value, 0);
+        
+        setMemberSplits(members.map(member => ({
+          ...member,
+          amount: (parsedAmount * member.value) / totalRatio
+        })));
+        break;
+    }
+  }, [selectedMembers, splitType, amount, groups, selectedGroup, groupId]);
+
+  const updateMemberSplit = (userId: string, newValue: number) => {
+    setMemberSplits(prev => {
+      const updatedSplits = prev.map(split => 
+        split.userId === userId ? { ...split, value: newValue } : split
+      );
+
+      const parsedAmount = parseFloat(amount) || 0;
+      const totalRatio = updatedSplits.reduce((sum, split) => sum + split.value, 0);
+      
+      return updatedSplits.map(split => ({
+        ...split,
+        amount: (parsedAmount * split.value) / totalRatio
+      }));
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,26 +139,67 @@ export function AddExpenseModal({ children, groupId }: AddExpenseModalProps) {
       return;
     }
 
+    // Validate that all ratios are positive numbers when using ratio split
+    if (splitType === 'ratio') {
+      const hasInvalidRatio = memberSplits.some(split => split.value <= 0);
+      if (hasInvalidRatio) {
+        toast({
+          title: "Invalid split",
+          description: "All ratios must be positive numbers.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    // Ensure the payer is included in the splits
+    if (!selectedMembers.includes(user?.id || '')) {
+      toast({
+        title: "Invalid split",
+        description: "The person who paid must be included in the split.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
-      await createExpenseMutation.mutateAsync({
+      const parsedAmount = parseFloat(amount);
+      const splits = memberSplits.map(split => ({
+        userId: split.userId,
+        amount: split.amount
+      }));
+
+      // Validate total split amount
+      const totalSplit = splits.reduce((sum, split) => sum + split.amount, 0);
+      if (Math.abs(totalSplit - parsedAmount) > 0.01) {
+        toast({
+          title: "Invalid split",
+          description: "The total split amount must equal the expense amount.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const result = await createExpenseMutation.mutateAsync({
         groupId: selectedGroup,
         description: description.trim(),
-        amount: parseFloat(amount),
+        amount: parsedAmount,
         category: category || undefined,
-        splitAmong: selectedMembers,
+        splitAmong: splits
       });
 
-      toast({
-        title: "Expense added",
-        description: `Added ₹${parseFloat(amount).toLocaleString()} for "${description}"`,
-      });
-
-      setOpen(false);
-    } catch (error) {
+      if (result) {
+        toast({
+          title: "Expense added",
+          description: `Added ₹${parsedAmount.toLocaleString()} for "${description}"`,
+        });
+        setOpen(false);
+      }
+    } catch (error: any) {
       console.error('Error creating expense:', error);
       toast({
         title: "Error adding expense",
-        description: "Failed to add the expense. Please try again.",
+        description: error?.message || "Failed to add the expense. Please try again.",
         variant: "destructive",
       });
     }
@@ -189,23 +305,45 @@ export function AddExpenseModal({ children, groupId }: AddExpenseModalProps) {
             </Select>
           </div>
 
-          {(selectedGroup || groupId) && groupMembers.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <Label>Split With</Label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={toggleAllMembers}
-                >
-                  {selectedMembers.length === groupMembers.length ? "Deselect All" : "Select All"}
-                </Button>
+          <div className="space-y-2">
+            <Label>Split Type</Label>
+            <RadioGroup
+              value={splitType}
+              onValueChange={(value: SplitType) => setSplitType(value)}
+              className="flex space-x-4"
+            >
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="equal" id="equal" />
+                <Label htmlFor="equal">Equal</Label>
               </div>
-              <ScrollArea className="h-[120px] border rounded-md p-2">
-                <div className="space-y-2">
-                  {groupMembers.map((member) => (
-                    <div key={member.user_id} className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="ratio" id="ratio" />
+                <Label htmlFor="ratio">Ratio</Label>
+              </div>
+            </RadioGroup>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Split With</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={toggleAllMembers}
+                className="h-auto py-1"
+              >
+                {selectedMembers.length === groupMembers.length ? "Deselect All" : "Select All"}
+              </Button>
+            </div>
+            <ScrollArea className="h-[200px]">
+              <div className="space-y-2">
+                {groupMembers.map((member) => (
+                  <div
+                    key={member.user_id}
+                    className="flex items-center justify-between space-x-2"
+                  >
+                    <div className="flex items-center space-x-2">
                       <Checkbox
                         id={member.user_id}
                         checked={selectedMembers.includes(member.user_id)}
@@ -213,45 +351,54 @@ export function AddExpenseModal({ children, groupId }: AddExpenseModalProps) {
                       />
                       <div className="flex items-center space-x-2">
                         <Avatar className="h-6 w-6">
-                          <AvatarFallback className="bg-splitflow-light text-splitflow-primary text-xs">
+                          <AvatarFallback className="text-xs">
                             {member.profiles.full_name
-                              .split(' ')
-                              .map(n => n[0])
-                              .join('')
+                              .split(" ")
+                              .map((n) => n[0])
+                              .join("")
                               .toUpperCase()}
                           </AvatarFallback>
                         </Avatar>
-                        <Label
+                        <label
                           htmlFor={member.user_id}
-                          className="text-sm font-normal cursor-pointer"
+                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                         >
                           {member.profiles.full_name}
-                        </Label>
+                          {member.user_id === user?.id && " (You)"}
+                        </label>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </ScrollArea>
-              {selectedMembers.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Splitting ₹{amount ? (parseFloat(amount) / selectedMembers.length).toFixed(2) : '0.00'} per person
-                </p>
-              )}
-            </div>
-          )}
-
-          <div className="flex justify-end space-x-2 pt-4">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button 
-              type="submit" 
-              className="bg-splitflow-primary hover:bg-splitflow-dark"
-              disabled={createExpenseMutation.isPending}
-            >
-              {createExpenseMutation.isPending ? "Adding..." : "Add Expense"}
-            </Button>
+                    {selectedMembers.includes(member.user_id) && splitType !== 'equal' && (
+                      <div className="flex items-center space-x-2">
+                        <Input
+                          type="number"
+                          value={memberSplits.find(s => s.userId === member.user_id)?.value || 0}
+                          onChange={(e) => updateMemberSplit(member.user_id, parseFloat(e.target.value) || 0)}
+                          className="w-20 text-right"
+                          min="0"
+                          step="0.1"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+            {amount && selectedMembers.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {memberSplits.map(split => (
+                  <div key={split.userId} className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">{split.name}</span>
+                    <span>₹{split.amount.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+
+          <Button type="submit" className="w-full">
+            Add Expense
+          </Button>
         </form>
       </DialogContent>
     </Dialog>
